@@ -1,0 +1,123 @@
+#!/usr/bin/env python3
+"""Menu Hider - hide non-Flatpak GNOME menu entries for one user.
+
+The grid is the point, but every action also has a text form. That is not
+decoration: it is the only way to check the writing logic without a screen,
+and it lets you script a new child account.
+"""
+
+import argparse
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from menuhider import core  # noqa: E402
+
+
+def build_parser():
+    p = argparse.ArgumentParser(
+        prog="menu-hider",
+        description="Hide GNOME menu entries that Flatpak parental controls miss.",
+        epilog="With no action, the window opens.",
+    )
+    p.add_argument("-u", "--user", metavar="NAME",
+                   help="the user whose menu to edit (default: you). "
+                        "Another user needs root.")
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("-l", "--list", action="store_true",
+                   help="print the entries and their state, then exit")
+    g.add_argument("--hide", nargs="+", metavar="ID",
+                   help="hide these entries (ids as printed by --list)")
+    g.add_argument("--show", nargs="+", metavar="ID",
+                   help="put these entries back in the menu")
+    g.add_argument("--show-all", action="store_true",
+                   help="put every entry this tool hid back in the menu")
+    p.add_argument("--only", choices=("all", "visible", "hidden"), default="all",
+                   help="narrow --list (default: all)")
+    return p
+
+
+def do_list(apps, only):
+    rows = []
+    for app in sorted(apps.values(), key=lambda a: a.name.casefold()):
+        if only == "visible" and app.hidden:
+            continue
+        if only == "hidden" and not app.hidden:
+            continue
+        rows.append(app)
+    # Capped: one very long web-app id would otherwise push every name
+    # off the right edge of the terminal.
+    width = min(max((len(a.app_id) for a in rows), default=10), 46)
+    for app in rows:
+        state = "HIDDEN" if app.hidden else "menu  "
+        tag = f" [{app.mode}]" if app.hidden else ""
+        print(f"{state}  {app.app_id:<{width}}  {app.name}{tag}")
+    hidden = sum(1 for a in apps.values() if a.hidden)
+    print(f"\n{len(apps)} non-Flatpak entries, {hidden} hidden.", file=sys.stderr)
+
+
+def resolve(apps, wanted):
+    """Accept an id with or without the .desktop suffix."""
+    out, missing = [], []
+    for name in wanted:
+        app = apps.get(name) or apps.get(name + ".desktop")
+        if app is None:
+            missing.append(name)
+        else:
+            out.append(app)
+    return out, missing
+
+
+def main(argv):
+    args = build_parser().parse_args(argv[1:])
+    try:
+        target = core.Target(args.user)
+    except KeyError:
+        print(f"menu-hider: no such user: {args.user}", file=sys.stderr)
+        return 2
+    except PermissionError as exc:
+        print(f"menu-hider: {exc}", file=sys.stderr)
+        return 1
+
+    if not (args.list or args.hide or args.show or args.show_all):
+        from menuhider import ui
+        return ui.run(target, [argv[0]])
+
+    apps = core.collect(target)
+
+    if args.list:
+        do_list(apps, args.only)
+        return 0
+
+    missing = []
+    if args.show_all:
+        chosen = [a for a in apps.values() if a.hidden and a.managed]
+        action, verb = core.show, "shown"
+    elif args.hide:
+        chosen, missing = resolve(apps, args.hide)
+        action, verb = core.hide, "hidden"
+    else:
+        chosen, missing = resolve(apps, args.show)
+        action, verb = core.show, "shown"
+
+    rc = 0
+    done = 0
+    for app in chosen:
+        try:
+            action(app, target)
+        except Exception as exc:  # noqa: BLE001
+            print(f"menu-hider: {app.app_id}: {exc}", file=sys.stderr)
+            rc = 1
+            continue
+        done += 1
+    core.refresh(target)
+    print(f"{done} {verb}.", file=sys.stderr)
+    for name in missing:
+        print(f"menu-hider: not a listed entry: {name}", file=sys.stderr)
+        rc = 1
+    return rc
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

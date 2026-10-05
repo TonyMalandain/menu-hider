@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Menu Hider
+Comment=Hide app menu entries that Flatpak parental controls miss
+Exec=menu-hider
+Icon=application-x-executable
+Terminal=false
+Categories=Settings;
+Keywords=menu;hide;parental;apps;
+StartupNotify=true
